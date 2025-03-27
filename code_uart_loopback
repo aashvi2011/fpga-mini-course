@@ -1,0 +1,129 @@
+module top (
+  // Outputs
+  output wire led_red,     // Red LED
+  output wire led_blue,    // Blue LED
+  output wire led_green,   // Green LED
+  output wire uarttx,      // UART Transmit
+  input wire uartrx,       // UART Receive
+  input wire hw_clk        // Hardware Clock
+);
+
+  wire        int_osc; 
+  reg  [27:0] frequency_counter_i;
+  reg  [7:0]  rx_buffer;
+  reg         send_data;
+  wire        tx_done;
+  
+  //----------------------------------------------------------------------------  
+  // Internal Oscillator
+  //----------------------------------------------------------------------------  
+  SB_HFOSC #(.CLKHF_DIV ("0b10")) u_SB_HFOSC (
+    .CLKHFPU(1'b1), 
+    .CLKHFEN(1'b1), 
+    .CLKHF(int_osc)
+  );
+
+  //----------------------------------------------------------------------------  
+  // Frequency Counter (for baud rate generation)
+  //----------------------------------------------------------------------------  
+  always @(posedge int_osc) begin
+    frequency_counter_i <= frequency_counter_i + 1'b1;
+    
+    // Simulate data reception every ~1 second
+    if (frequency_counter_i == 28'd50_000_000) begin  
+      rx_buffer <= 8'h55; // Example data (0x55)
+      send_data <= 1'b1;
+      frequency_counter_i <= 0;
+    end else begin
+      send_data <= 1'b0;
+    end
+  end
+
+  //----------------------------------------------------------------------------  
+  // UART Transmitter Instantiation
+  //----------------------------------------------------------------------------  
+  uart_tx_8n1 uart_transmitter (
+    .clk(int_osc), 
+    .txbyte(rx_buffer), 
+    .senddata(send_data), 
+    .txdone(tx_done), 
+    .tx(uarttx)
+  );
+
+  //----------------------------------------------------------------------------  
+  // LED Control - Blink LED based on UART reception
+  //----------------------------------------------------------------------------  
+  SB_RGBA_DRV RGB_DRIVER (
+    .RGBLEDEN(1'b1),
+    .RGB0PWM (uartrx),
+    .RGB1PWM (uartrx),
+    .RGB2PWM (uartrx),
+    .CURREN  (1'b1),
+    .RGB0    (led_green), 
+    .RGB1    (led_blue),
+    .RGB2    (led_red)
+  );
+  defparam RGB_DRIVER.RGB0_CURRENT = "0b000001";
+  defparam RGB_DRIVER.RGB1_CURRENT = "0b000001";
+  defparam RGB_DRIVER.RGB2_CURRENT = "0b000001";
+
+endmodule
+
+//----------------------------------------------------------------------------
+// UART Transmitter (8N1)
+//----------------------------------------------------------------------------
+module uart_tx_8n1 (
+    input clk,           // Input clock
+    input [7:0] txbyte,  // Data to send
+    input senddata,      // Trigger transmission
+    output reg txdone,   // Transmission complete flag
+    output reg tx        // UART Transmit line
+);
+
+    parameter STATE_IDLE     = 8'd0;
+    parameter STATE_STARTTX  = 8'd1;
+    parameter STATE_TXING    = 8'd2;
+    parameter STATE_TXDONE   = 8'd3;
+
+    reg [7:0] state = STATE_IDLE;
+    reg [7:0] buf_tx;
+    reg [3:0] bits_sent;
+
+    always @(posedge clk) begin
+        case (state)
+            STATE_IDLE: begin
+                tx <= 1'b1;  // Idle state (UART line high)
+                txdone <= 1'b0;
+                if (senddata) begin
+                    state <= STATE_STARTTX;
+                    buf_tx <= txbyte;
+                end
+            end
+
+            STATE_STARTTX: begin
+                tx <= 1'b0;  // Start bit (low)
+                state <= STATE_TXING;
+                bits_sent <= 4'd0;
+            end
+
+            STATE_TXING: begin
+                if (bits_sent < 8) begin
+
+                    tx <= buf_tx[0];  // Send LSB first
+                    buf_tx <= buf_tx >> 1;
+                    bits_sent <= bits_sent + 1;
+                end else begin
+                    tx <= 1'b1;  // Stop bit (high)
+                    state <= STATE_TXDONE;
+                end
+            end
+
+            STATE_TXDONE: begin
+                txdone <= 1'b1;
+                state <= STATE_IDLE;
+            end
+        endcase
+    end
+endmodule
+
+
